@@ -1,0 +1,16 @@
+# English noise patterns
+re:^\s*(skip to main content|back to top|reload|dismiss alert)\s*$
+re:^\s*(you signed (?:in|out) with another tab or window\.?)\s*$
+re:^\s*(repository files navigation|view all files)\s*$
+re:^\s*(invalid date)\s*$
+
+# Short UI fragments / anti-bot hints
+sub:open app
+sub:download app
+sub:log in to continue
+sub:you must be signed in
+sub:captcha
+sub:robot check
+sub:verify you are human
+sub:access denied
+sub:unusual traffic
