@@ -1,0 +1,29 @@
+name = "websearch-forwarder"
+main = "src/index.ts"
+compatibility_date = "2026-02-21"
+
+# Keep workers.dev for quick verification.
+# If you use a custom domain, set workers_dev = false and add [[routes]] below.
+# workers_dev = true
+
+# Example custom-domain route:
+workers_dev = false
+
+[[routes]]
+pattern = "proxy.L1ngg.info"
+custom_domain = true
+
+[vars]
+# Comma-separated host allowlist. Empty means deny all (safe default behavior).
+ALLOWED_HOSTS = "search.brave.com,duckduckgo.com,zhihu.com,www.zhihu.com,linux.do,idcflare.com"
+
+# Upstream timeout for target fetch.
+UPSTREAM_TIMEOUT_MS = "20000"
+
+# Cache toggle for repeatable pages; keep 0 for dynamic search results.
+ENABLE_CACHE = "0"
+CACHE_TTL_SECONDS = "120"
+
+# Security toggles.
+FORWARD_COOKIES = "0"
+BLOCK_PRIVATE_HOSTS = "1"
