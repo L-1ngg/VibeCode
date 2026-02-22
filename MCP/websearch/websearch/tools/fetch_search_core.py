@@ -598,6 +598,14 @@ async def _fetch_with_playwright(
                 if resolved:
                     launch_args["executable_path"] = resolved
 
+            exe = launch_args.get("executable_path") or getattr(p.chromium, "executable_path", "")
+            if exe and not os.path.exists(exe):
+                return {
+                    "success": False, "url": url,
+                    "error": f"Playwright browser not installed at {exe}. Run: playwright install chromium",
+                    "via_playwright": True,
+                }
+
             browser = await p.chromium.launch(**launch_args)
             try:
                 context = await browser.new_context(**context_kwargs)

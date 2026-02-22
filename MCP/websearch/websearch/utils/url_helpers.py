@@ -175,6 +175,8 @@ def resolve_playwright_executable_path(path: str) -> str | None:
         ("chrome-mac-x64", "chrome-mac-arm64"),
         ("chrome-headless-shell-mac-x64", "chrome-headless-shell-mac-arm64"),
         ("mac-x64", "mac-arm64"),
+        ("chrome-win64", "chrome-win32"),
+        ("chrome-headless-shell-win64", "chrome-headless-shell-win32"),
     )
     for old, new in replacements:
         if old in path:
