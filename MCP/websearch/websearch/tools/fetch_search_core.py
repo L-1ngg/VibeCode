@@ -12,7 +12,7 @@ from urllib.parse import parse_qsl, quote_plus, urlparse, urlunparse
 from bs4 import BeautifulSoup
 from curl_cffi import requests as curl_requests
 
-from ..utils.config import get_config
+from ..utils.config import AppConfig, get_config
 from ..utils.content_parse import limit_content_length
 from ..utils.extraction import (
     _build_degraded_markdown,
@@ -46,7 +46,7 @@ _CURL_RETRYABLE_HINTS = (
 )
 
 
-def _default_headers(cfg: object) -> dict[str, str]:
+def _default_headers(cfg: AppConfig) -> dict[str, str]:
     return {
         "User-Agent": cfg.user_agent,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -74,71 +74,66 @@ async def _search_brave_core(
     query: str,
     max_results: int = 20,
 ) -> list[dict[str, str]]:
-    try:
+    def _fetch_and_parse() -> list[dict[str, str]]:
+        cfg = get_config()
+        target_url = f"https://search.brave.com/search?q={quote_plus(query)}"
+        visit_url = get_target_url(target_url)
 
-        def _fetch_and_parse() -> list[dict[str, str]]:
-            cfg = get_config()
-            target_url = f"https://search.brave.com/search?q={quote_plus(query)}"
-            visit_url = get_target_url(target_url)
+        logger.info("正在搜索: %s", query)
+        if cfg.cf_worker_url:
+            logger.info("Via Cloudflare Worker: %s", visit_url)
 
-            logger.info("正在搜索: %s", query)
-            if cfg.cf_worker_url:
-                logger.info("Via Cloudflare Worker: %s", visit_url)
+        request_headers = _default_headers(cfg)
 
-            request_headers = _default_headers(cfg)
+        response = curl_requests.get(
+            visit_url,
+            headers=request_headers,
+            proxies=get_proxies(),
+            timeout=cfg.search_timeout_s,
+            allow_redirects=True,
+            impersonate=cfg.curl_impersonate,
+            http_version=cfg.http_version,
+        )
+        response.raise_for_status()
+        html = response.text or ""
+        results = _extract_brave_results(html, max_results, cfg)
+        logger.info("搜索完成，找到 %s 个结果", len(results))
+        return results
 
-            response = curl_requests.get(
-                visit_url,
-                headers=request_headers,
-                proxies=get_proxies(),
-                timeout=cfg.search_timeout_s,
-                allow_redirects=True,
-                impersonate=cfg.curl_impersonate,
-                http_version=cfg.http_version,
+    def _extract_brave_results(html: str, limit: int, cfg: AppConfig) -> list[dict[str, str]]:
+        soup = BeautifulSoup(html, "lxml")
+        items = soup.select('[data-type="web"]')
+        if not items:
+            items = soup.select(".snippet")
+
+        if limit and limit > 0:
+            items = items[:limit]
+
+        extracted: list[dict[str, str]] = []
+        for item in items:
+            link = item.select_one("a[href]")
+            if not link:
+                continue
+            href = link.get("href", "")
+            if not href.startswith("http"):
+                continue
+            if cfg.cf_worker_url and cfg.cf_worker_url in href:
+                continue
+
+            title_elem = item.select_one(".snippet-title, .title")
+            desc_elem = item.select_one(".snippet-description, .snippet-content, .description")
+
+            extracted.append(
+                {
+                    "title": title_elem.get_text(strip=True) if title_elem else "No Title",
+                    "url": href,
+                    "description": desc_elem.get_text(strip=True) if desc_elem else "",
+                }
             )
-            response.raise_for_status()
-            html = response.text or ""
-            results = _extract_brave_results(html, max_results)
-            logger.info("搜索完成，找到 %s 个结果", len(results))
-            return results
+        return extracted
 
-        def _extract_brave_results(html: str, limit: int) -> list[dict[str, str]]:
-            soup = BeautifulSoup(html, "lxml")
-            items = soup.select('[data-type="web"]')
-            if not items:
-                items = soup.select(".snippet")
-
-            if limit and limit > 0:
-                items = items[:limit]
-
-            extracted: list[dict[str, str]] = []
-            for item in items:
-                link = item.select_one("a[href]")
-                if not link:
-                    continue
-                href = link.get("href", "")
-                if not href.startswith("http"):
-                    continue
-                if cfg.cf_worker_url and cfg.cf_worker_url in href:
-                    continue
-
-                title_elem = item.select_one(".snippet-title, .title")
-                desc_elem = item.select_one(".snippet-description, .snippet-content, .description")
-
-                extracted.append(
-                    {
-                        "title": title_elem.get_text(strip=True) if title_elem else "No Title",
-                        "url": href,
-                        "description": desc_elem.get_text(strip=True) if desc_elem else "",
-                    }
-                )
-            return extracted
-
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, _fetch_and_parse)
-    except Exception as e:
-        logger.error("搜索过程发生错误: %s", e)
-        return []
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _fetch_and_parse)
 
 
 async def _search_duckduckgo_core(
@@ -604,69 +599,72 @@ async def _fetch_with_playwright(
                     launch_args["executable_path"] = resolved
 
             browser = await p.chromium.launch(**launch_args)
-            context = await browser.new_context(**context_kwargs)
-            await context.set_extra_http_headers(extra_headers)
-            page = await context.new_page()
-            await Stealth().apply_stealth_async(page)
-            await page.goto(url, wait_until="domcontentloaded", timeout=cfg.playwright_timeout_ms)
             try:
-                await page.wait_for_load_state("networkidle", timeout=min(cfg.playwright_timeout_ms, 5000))
-            except Exception:
-                pass
-
-            for _ in range(max(1, cfg.playwright_challenge_wait)):
+                context = await browser.new_context(**context_kwargs)
                 try:
-                    title = await page.title()
-                except Exception:
-                    await page.wait_for_timeout(1000)
-                    continue
-                if not looks_like_challenge_text(title):
-                    break
-                await page.wait_for_timeout(1000)
+                    await context.set_extra_http_headers(extra_headers)
+                    page = await context.new_page()
+                    await Stealth().apply_stealth_async(page)
+                    await page.goto(url, wait_until="domcontentloaded", timeout=cfg.playwright_timeout_ms)
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=min(cfg.playwright_timeout_ms, 5000))
+                    except Exception:
+                        pass
 
-            try:
-                html = await page.content()
-            except Exception:
-                try:
-                    await page.wait_for_load_state("domcontentloaded", timeout=cfg.playwright_timeout_ms)
-                    html = await page.content()
-                except Exception as e:
-                    return {"success": False, "url": url, "error": str(e), "via_playwright": True}
-            blocked = looks_like_blocked_text(html)
+                    for _ in range(max(1, cfg.playwright_challenge_wait)):
+                        try:
+                            title = await page.title()
+                        except Exception:
+                            await page.wait_for_timeout(1000)
+                            continue
+                        if not looks_like_challenge_text(title):
+                            break
+                        await page.wait_for_timeout(1000)
 
-            if mode == "html":
-                limited_html, was_truncated = limit_content_length(html)
-                result = {
-                    "success": True,
-                    "url": url,
-                    "via_worker": False,
-                    "via_playwright": True,
-                    "html": limited_html,
-                    "truncated": was_truncated,
-                    "blocked": blocked,
-                }
-            elif mode in ("text", "markdown"):
-                result = _extract_and_build_result(html, url, mode, blocked)
-            elif mode in ("meta", "metadata"):
-                metadata = _extract_metadata(html)
-                result = {
-                    "success": True,
-                    "url": url,
-                    "via_worker": False,
-                    "via_playwright": True,
-                    "blocked": blocked,
-                    **metadata,
-                }
-            else:
-                result = {
-                    "success": False,
-                    "url": url,
-                    "error": f"Unsupported mode: {mode}",
-                    "via_playwright": True,
-                }
+                    try:
+                        html = await page.content()
+                    except Exception:
+                        try:
+                            await page.wait_for_load_state("domcontentloaded", timeout=cfg.playwright_timeout_ms)
+                            html = await page.content()
+                        except Exception as e:
+                            return {"success": False, "url": url, "error": str(e), "via_playwright": True}
+                    blocked = looks_like_blocked_text(html)
 
-            await context.close()
-            await browser.close()
-            return result
+                    if mode == "html":
+                        limited_html, was_truncated = limit_content_length(html)
+                        result = {
+                            "success": True,
+                            "url": url,
+                            "via_worker": False,
+                            "via_playwright": True,
+                            "html": limited_html,
+                            "truncated": was_truncated,
+                            "blocked": blocked,
+                        }
+                    elif mode in ("text", "markdown"):
+                        result = _extract_and_build_result(html, url, mode, blocked)
+                    elif mode in ("meta", "metadata"):
+                        metadata = _extract_metadata(html)
+                        result = {
+                            "success": True,
+                            "url": url,
+                            "via_worker": False,
+                            "via_playwright": True,
+                            "blocked": blocked,
+                            **metadata,
+                        }
+                    else:
+                        result = {
+                            "success": False,
+                            "url": url,
+                            "error": f"Unsupported mode: {mode}",
+                            "via_playwright": True,
+                        }
+                    return result
+                finally:
+                    await context.close()
+            finally:
+                await browser.close()
     except Exception as e:
         return {"success": False, "url": url, "error": str(e), "via_playwright": True}

@@ -30,17 +30,20 @@ def call_openai_chat_completions(prompt: str) -> tuple[str, str]:
         "Accept": "application/json, text/event-stream",
     }
 
-    response = curl_requests.post(
-        url,
-        json=payload,
-        headers=headers,
-        proxies=get_proxies(),
-        allow_redirects=True,
-        impersonate=cfg.curl_impersonate,
-        http_version=cfg.http_version,
-        stream=True,
-    )
-    response.raise_for_status()
+    try:
+        response = curl_requests.post(
+            url,
+            json=payload,
+            headers=headers,
+            proxies=get_proxies(),
+            allow_redirects=True,
+            impersonate=cfg.curl_impersonate,
+            http_version=cfg.http_version,
+            stream=True,
+        )
+        response.raise_for_status()
+    except Exception as e:
+        raise RuntimeError(f"OpenAI API call failed: {type(e).__name__}: {e}") from None
 
     content_type = (response.headers.get("content-type") or "").lower()
     is_sse = "text/event-stream" in content_type
