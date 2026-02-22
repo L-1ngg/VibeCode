@@ -1,30 +1,33 @@
+from __future__ import annotations
+
 import asyncio
 import logging
-import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
 from ..utils.config import get_config, init_runtime
+from ..utils.content_parse import (
+    extract_browse_page_links,
+    limit_content_length,
+    parse_markdown_links,
+    strip_urls,
+)
 from ..utils.extraction import (
     _build_degraded_markdown,
     _clean_extracted_markdown,
     _extract_best_content,
     _score_content,
 )
-from ..utils.url_text import (
-    _call_openai_chat_completions,
-    _extract_browse_page_links,
-    _get_hostname,
-    _get_target_url,
-    _is_site_query,
-    _limit_content_length,
-    _looks_like_blocked_text,
-    _normalize_url_for_dedup,
-    _parse_markdown_links,
-    _prefer_playwright_for_url,
-    _strip_urls,
-    _unwrap_redirect_url,
+from ..utils.html_detect import looks_like_blocked_text
+from ..utils.openai_client import call_openai_chat_completions
+from ..utils.proxy import get_target_url
+from ..utils.url_helpers import (
+    get_hostname,
+    is_site_query,
+    normalize_url_for_dedup,
+    prefer_playwright_for_url,
+    unwrap_redirect_url,
 )
 from .fetch_search_core import (
     _curl_get_with_retries,
@@ -44,8 +47,8 @@ def _llm_configured() -> bool:
 
 
 @mcp.tool()
-async def fetch(url: str, *, headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-    def _fetch() -> Dict[str, Any]:
+async def fetch(url: str, *, headers: dict[str, str] | None = None) -> dict[str, Any]:
+    def _fetch() -> dict[str, Any]:
         cfg = get_config()
 
         zhihu_result = _fetch_zhihu_answer_content(url, mode="markdown")
@@ -56,10 +59,10 @@ async def fetch(url: str, *, headers: Optional[Dict[str, str]] = None) -> Dict[s
         if discourse_result:
             return discourse_result
 
-        if _prefer_playwright_for_url(url) and cfg.playwright_fallback:
+        if prefer_playwright_for_url(url) and cfg.playwright_fallback:
             return {"success": False, "url": url, "needs_playwright": True}
 
-        target_url = _get_target_url(url)
+        target_url = get_target_url(url)
         response = _curl_get_with_retries(
             target_url,
             headers=headers,
@@ -68,7 +71,8 @@ async def fetch(url: str, *, headers: Optional[Dict[str, str]] = None) -> Dict[s
         )
 
         raw_html = response.text or ""
-        if _looks_like_blocked_text(raw_html) and cfg.playwright_fallback:
+        blocked = looks_like_blocked_text(raw_html)
+        if blocked and cfg.playwright_fallback:
             return {
                 "success": False,
                 "url": url,
@@ -76,8 +80,6 @@ async def fetch(url: str, *, headers: Optional[Dict[str, str]] = None) -> Dict[s
                 "via_worker": bool(cfg.cf_worker_url),
                 "status_code": response.status_code,
             }
-
-        blocked = _looks_like_blocked_text(raw_html)
         extracted = _extract_best_content(raw_html, url=url, output_format="markdown")
         if blocked and extracted.get("quality_score", 0) < 65:
             degraded = _build_degraded_markdown(raw_html) or ""
@@ -89,7 +91,7 @@ async def fetch(url: str, *, headers: Optional[Dict[str, str]] = None) -> Dict[s
                 "degraded": True,
                 **metrics,
             }
-        limited_md, was_truncated = _limit_content_length(extracted.get("content", ""))
+        limited_md, was_truncated = limit_content_length(extracted.get("content", ""))
 
         return {
             "success": True,
@@ -123,7 +125,7 @@ async def fetch(url: str, *, headers: Optional[Dict[str, str]] = None) -> Dict[s
     if result.get("needs_playwright") and get_config().playwright_fallback:
         return await _fetch_with_playwright(url, mode="markdown", headers=headers)
 
-    if _looks_like_blocked_text(result.get("markdown", "")) and get_config().playwright_fallback:
+    if looks_like_blocked_text(result.get("markdown", "")) and get_config().playwright_fallback:
         pw_result = await _fetch_with_playwright(url, mode="markdown", headers=headers)
         if pw_result.get("success"):
             return pw_result
@@ -134,35 +136,35 @@ async def fetch(url: str, *, headers: Optional[Dict[str, str]] = None) -> Dict[s
 
 
 @mcp.tool()
-async def web_search(query: str) -> Dict[str, Any]:
+async def web_search(query: str) -> dict[str, Any]:
     logger.info("Search request: query='%s'", query)
 
     cfg = get_config()
-    is_site = _is_site_query(query)
+    is_site = is_site_query(query)
 
     ai_summary = ""
     ai_error = ""
-    ai_priority_links: List[Dict[str, str]] = []
-    ai_links_only: List[Dict[str, str]] = []
-    browser_links: List[Dict[str, str]] = []
-    browser_diagnostics: Dict[str, Any] = {
+    ai_priority_links: list[dict[str, str]] = []
+    ai_links_only: list[dict[str, str]] = []
+    browser_links: list[dict[str, str]] = []
+    browser_diagnostics: dict[str, Any] = {
         "backend": "none",
         "fallback_used": False,
         "brave_results": 0,
         "ddg_results": 0,
     }
 
-    async def _ai_search_async() -> Tuple[List[Dict[str, str]], List[Dict[str, str]], str, str]:
+    async def _ai_search_async() -> tuple[list[dict[str, str]], list[dict[str, str]], str, str]:
         if not _llm_configured():
             return [], [], "", "llm_not_configured"
 
-        def _ai_search() -> Tuple[str, str]:
+        def _ai_search() -> tuple[str, str]:
             prompt = f"""你是一个研究型搜索助手。请通过联网检索与交叉验证，给出高质量、细节充分的回答，避免编造。
 输出要求：
 1) 正文：自然语言写作，不要输出任何 URL/链接（包括 http/https/www 开头内容），也不要出现“参考来源/References/Sources”等段落标题。
 2) 末尾追加一段 SOURCES（必须以单独一行 'SOURCES:' 开头），其后每行一个你参考过的来源 URL（最多 30 条）。
 用户问题：{query}"""
-            return _call_openai_chat_completions(prompt)
+            return call_openai_chat_completions(prompt)
 
         loop = asyncio.get_running_loop()
         try:
@@ -171,15 +173,15 @@ async def web_search(query: str) -> Dict[str, Any]:
             logger.warning("AI search unavailable, fallback: %s", e)
             return [], [], "", str(e)
 
-        priority_links = _extract_browse_page_links(raw_content, extra_text=raw_reasoning)
-        ai_links, summary = _parse_markdown_links(raw_content, extra_text=raw_reasoning)
-        priority_keys = {_normalize_url_for_dedup(l.get("url", "")) or l.get("url", "") for l in priority_links}
+        priority_links = extract_browse_page_links(raw_content, extra_text=raw_reasoning)
+        ai_links, summary = parse_markdown_links(raw_content, extra_text=raw_reasoning)
+        priority_keys = {normalize_url_for_dedup(l.get("url", "")) or l.get("url", "") for l in priority_links}
         ai_links_others = [
             link
             for link in ai_links
-            if ((_normalize_url_for_dedup(link.get("url", "")) or link.get("url", "")) not in priority_keys)
+            if ((normalize_url_for_dedup(link.get("url", "")) or link.get("url", "")) not in priority_keys)
         ]
-        summary = _strip_urls(summary)
+        summary = strip_urls(summary)
         logger.info(
             "AI search done: links=%s browse_page_links=%s",
             len(ai_links),
@@ -187,9 +189,9 @@ async def web_search(query: str) -> Dict[str, Any]:
         )
         return priority_links, ai_links_others, summary, ""
 
-    async def _browser_search_async() -> Tuple[List[Dict[str, str]], Dict[str, Any]]:
+    async def _browser_search_async() -> tuple[list[dict[str, str]], dict[str, Any]]:
         internal_limit = max(cfg.search_result_limit * 2, 20)
-        diagnostics: Dict[str, Any] = {
+        diagnostics: dict[str, Any] = {
             "backend": "none",
             "fallback_used": False,
             "brave_results": 0,
@@ -243,15 +245,15 @@ async def web_search(query: str) -> Dict[str, Any]:
     )
 
     seen_urls: set[str] = set()
-    unique_links: List[Dict[str, str]] = []
+    unique_links: list[dict[str, str]] = []
     for link in merged_links:
         if not isinstance(link, dict):
             continue
         raw_url = link.get("url", "")
-        url = _unwrap_redirect_url(raw_url)
+        url = unwrap_redirect_url(raw_url)
         if not url or not url.startswith("http"):
             continue
-        dedup_key = _normalize_url_for_dedup(url) or url
+        dedup_key = normalize_url_for_dedup(url) or url
         if dedup_key in seen_urls:
             continue
         seen_urls.add(dedup_key)
@@ -263,20 +265,17 @@ async def web_search(query: str) -> Dict[str, Any]:
         )
 
     limit = cfg.search_result_limit
-    try:
-        max_per_domain = int(os.getenv("SEARCH_MAX_PER_DOMAIN", "2"))
-    except Exception:
-        max_per_domain = 2
+    max_per_domain = cfg.search_max_per_domain
     if max_per_domain < 0:
         max_per_domain = 0
     if is_site:
         max_per_domain = 0
 
-    domain_counts: Dict[str, int] = {}
-    limited_links: List[Dict[str, str]] = []
+    domain_counts: dict[str, int] = {}
+    limited_links: list[dict[str, str]] = []
     for link in unique_links:
         url = link.get("url", "")
-        host = _get_hostname(url) if url else ""
+        host = get_hostname(url) if url else ""
         if max_per_domain > 0 and host:
             if domain_counts.get(host, 0) >= max_per_domain:
                 continue

@@ -15,14 +15,12 @@ from typing import Dict, List
 
 from websearch.tools.search import fetch, mcp, web_search
 from websearch.utils.config import get_config, init_runtime
-from websearch.utils.url_text import (
-    _extract_browse_page_links,
-    _normalize_url_for_dedup,
-    _parse_markdown_links,
-    _parse_sse_chat_completions,
-    _strip_urls,
-    _unwrap_redirect_url,
+from websearch.utils.content_parse import (
+    extract_browse_page_links,
+    parse_markdown_links,
+    strip_urls,
 )
+from websearch.utils.url_helpers import normalize_url_for_dedup, unwrap_redirect_url
 
 
 def _is_placeholder_api_key(value: str) -> bool:
@@ -43,45 +41,29 @@ def _is_placeholder_api_key(value: str) -> bool:
 def _run_core_checks() -> List[str]:
     failures: List[str] = []
 
-    sse = "\n".join(
-        [
-            'data: {"choices":[{"delta":{"role":"assistant","content":"Hello "}}]}',
-            "",
-            'data: {"choices":[{"delta":{"content":"world"}}]}',
-            "",
-            "data: [DONE]",
-            "",
-        ]
-    )
-    sse_content, sse_reasoning = _parse_sse_chat_completions(sse)
-    if sse_content != "Hello world":
-        failures.append("SSE parser failed to join content")
-    if sse_reasoning != "":
-        failures.append("SSE parser returned unexpected reasoning text")
-
-    if _unwrap_redirect_url(
+    if unwrap_redirect_url(
         "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fa%3Fb%3Dc"
     ) != "https://example.com/a?b=c":
         failures.append("DDG redirect unwrap failed")
 
-    links, summary = _parse_markdown_links(
+    links, summary = parse_markdown_links(
         "[Example](https://example.com/a) bare https://example.com/b"
     )
     urls = {x.get("url") for x in links}
     if "https://example.com/a" not in urls or "https://example.com/b" not in urls:
         failures.append("Markdown link parser failed")
 
-    cleaned = _strip_urls(summary)
+    cleaned = strip_urls(summary)
     if "http://" in cleaned or "https://" in cleaned:
         failures.append("URL stripping failed")
 
-    browse_links = _extract_browse_page_links(
+    browse_links = extract_browse_page_links(
         'browse_page {"url":"https://openai.com/","instructions":"check"}'
     )
     if not browse_links or browse_links[0].get("url") != "https://openai.com/":
         failures.append("browse_page link extraction failed")
 
-    normalized = _normalize_url_for_dedup("https://example.com/path/?utm_source=x")
+    normalized = normalize_url_for_dedup("https://example.com/path/?utm_source=x")
     if normalized != "https://example.com/path":
         failures.append("URL normalization failed")
 

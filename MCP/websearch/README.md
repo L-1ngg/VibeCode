@@ -21,29 +21,48 @@
 │  ├─ __main__.py
 │  ├─ .env.example
 │  ├─ tools/
-│  │  ├─ search.py
-│  │  └─ fetch_search_core.py
+│  │  ├─ search.py              # MCP 工具入口：web_search / fetch
+│  │  └─ fetch_search_core.py   # 搜索引擎抓取、Playwright 回退、重试逻辑
 │  ├─ utils/
-│  │  ├─ config.py
-│  │  ├─ env_parser.py
-│  │  ├─ extraction.py
-│  │  ├─ logger.py
-│  │  ├─ noise_rules.py
-│  │  ├─ rules/
-│  │  │  ├─ noise_en.txt
-│  │  │  └─ noise_zh.txt
-│  │  └─ url_text.py
+│  │  ├─ config.py              # 集中配置管理（AppConfig / PlaywrightConfig / ExtractionConfig）
+│  │  ├─ env_parser.py          # .env 文件解析
+│  │  ├─ extraction.py          # HTML 正文提取、质量评分、站点适配器（CSDN/GitHub/Discourse 等）
+│  │  ├─ noise_rules.py         # 噪声行规则加载
+│  │  ├─ url_helpers.py         # URL 归一化、重定向解包、hostname 工具
+│  │  ├─ proxy.py               # 代理配置、Cloudflare Worker URL 拼接
+│  │  ├─ openai_client.py       # OpenAI 兼容 Chat Completions 客户端
+│  │  ├─ html_detect.py         # 反爬/Challenge 页面检测、HTML→纯文本
+│  │  ├─ content_parse.py       # 内容截断、Markdown 链接解析、URL/AI标签清理
+│  │  ├─ url_text.py            # 向后兼容 re-export shim（已拆分至上述模块）
+│  │  └─ rules/
+│  │     ├─ noise_en.txt
+│  │     └─ noise_zh.txt
 │  └─ test/
 │     ├─ smoke_check.py
 │     ├─ test_config_env_parser.py
 │     ├─ test_config_runtime.py
+│     ├─ test_extraction_config_surface.py
 │     ├─ test_retry_logic.py
 │     └─ test_search_diagnostics.py
+├─ worker/                       # Cloudflare Worker 转发模板
 ├─ WebSearch.py
-├─ requirements.txt
 ├─ pyproject.toml
 └─ README.md
 ```
+
+### 模块职责说明
+
+| 模块 | 职责 |
+|---|---|
+| `config.py` | 从 `.env` / 环境变量 / 命令行统一解析所有配置，暴露 `AppConfig` 冻结数据类 |
+| `url_helpers.py` | URL 去重归一化、跟踪参数清理、重定向解包、`site:` 查询检测 |
+| `proxy.py` | 根据配置生成 `proxies` 字典、拼接 Cloudflare Worker 转发 URL |
+| `openai_client.py` | 调用 OpenAI 兼容 API（支持 SSE 流式），用于 AI 搜索摘要 |
+| `html_detect.py` | 检测反爬拦截页 / Cloudflare Challenge、HTML→纯文本转换 |
+| `content_parse.py` | 内容长度截断、从 AI 回复中解析 Markdown 链接和 SOURCES 块 |
+| `extraction.py` | 多策略正文提取（trafilatura precision/recall/fast/baseline + 站点适配器），质量评分与排序 |
+| `fetch_search_core.py` | Brave/DuckDuckGo 搜索引擎抓取、curl 重试、知乎 API 适配、Playwright 浏览器回退 |
+| `search.py` | MCP 工具注册入口，编排 AI 搜索 + 浏览器搜索并发、结果去重合并 |
 
 ## 3. 安装依赖
 
@@ -230,7 +249,7 @@ uv run WebSearch.py
 - 可选返回 AI 总结（需要正确配置 OpenAI 相关变量）。
 - 返回搜索结果列表，并附带 `diagnostics` 用于排查后端/回退/错误信息。
 
-### `fetch(url: str, headers: Optional[Dict[str, str]] = None)`
+### `fetch(url: str, headers: dict[str, str] | None = None)`
 
 - 抓取网页并提取正文 Markdown。
 - 支持站点适配提取（如知乎、Discourse）。

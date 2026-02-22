@@ -13,6 +13,8 @@ from typing import Mapping, Optional, Sequence
 from .env_parser import load_env_file
 
 _ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+
+_DEFAULT_ACCEPT_LANGUAGE = "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7"
 _DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -21,6 +23,34 @@ _DEFAULT_USER_AGENT = (
 
 _RUNTIME_CONFIG: Optional["AppConfig"] = None
 _LOGGING_READY = False
+
+
+def _parse_viewport(raw: str | None) -> dict[str, int] | None:
+    if not raw:
+        return None
+    text = raw.lower().replace(" ", "")
+    if "x" in text:
+        w, h = text.split("x", 1)
+    elif "," in text:
+        w, h = text.split(",", 1)
+    else:
+        return None
+    try:
+        return {"width": int(w), "height": int(h)}
+    except ValueError:
+        return None
+
+
+@dataclass(frozen=True)
+class PlaywrightConfig:
+    headless: bool
+    user_agent: str
+    accept_language: str
+    locale: str
+    timezone_id: str
+    viewport: dict[str, int] | None
+    device_scale_factor: float
+    executable_path: str | None
 
 
 @dataclass(frozen=True)
@@ -47,6 +77,8 @@ class AppConfig:
     playwright_fallback: bool
     playwright_timeout_ms: int
     playwright_challenge_wait: int
+    search_max_per_domain: int
+    playwright: PlaywrightConfig
     extraction: ExtractionConfig
     log_level: str
 
@@ -244,6 +276,35 @@ def build_config(
         text_min_chars=extraction_text_min_chars,
     )
 
+    search_max_per_domain = _parse_int(
+        env_map.get("SEARCH_MAX_PER_DOMAIN"),
+        default=2,
+        minimum=0,
+        field_name="SEARCH_MAX_PER_DOMAIN",
+    )
+
+    pw_user_agent = _normalize_optional(env_map.get("PW_USER_AGENT")) or user_agent
+    pw_executable = (
+        _normalize_optional(env_map.get("PW_CHROMIUM_EXECUTABLE_PATH"))
+        or _normalize_optional(env_map.get("PW_EXECUTABLE_PATH"))
+        or _normalize_optional(env_map.get("PLAYWRIGHT_EXECUTABLE_PATH"))
+    )
+    try:
+        pw_device_scale = float(env_map.get("PW_DEVICE_SCALE", "2"))
+    except (ValueError, TypeError):
+        pw_device_scale = 2.0
+
+    playwright_cfg = PlaywrightConfig(
+        headless=_parse_bool(env_map.get("PW_HEADLESS"), default=True, field_name="PW_HEADLESS"),
+        user_agent=pw_user_agent,
+        accept_language=_normalize_optional(env_map.get("PW_ACCEPT_LANGUAGE")) or _DEFAULT_ACCEPT_LANGUAGE,
+        locale=_normalize_optional(env_map.get("PW_LOCALE")) or "zh-CN",
+        timezone_id=_normalize_optional(env_map.get("PW_TIMEZONE")) or "Asia/Shanghai",
+        viewport=_parse_viewport(env_map.get("PW_VIEWPORT", "1366x768")),
+        device_scale_factor=pw_device_scale,
+        executable_path=pw_executable,
+    )
+
     return AppConfig(
         proxy=proxy,
         cf_worker_url=cf_worker_url,
@@ -260,6 +321,8 @@ def build_config(
         playwright_fallback=playwright_fallback,
         playwright_timeout_ms=playwright_timeout_ms,
         playwright_challenge_wait=playwright_challenge_wait,
+        search_max_per_domain=search_max_per_domain,
+        playwright=playwright_cfg,
         extraction=extraction,
         log_level=log_level,
     )
@@ -350,6 +413,7 @@ def _reset_runtime_for_tests() -> None:
 __all__ = [
     "AppConfig",
     "ExtractionConfig",
+    "PlaywrightConfig",
     "build_config",
     "get_config",
     "init_runtime",

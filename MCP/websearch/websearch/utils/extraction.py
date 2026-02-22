@@ -1,18 +1,22 @@
-﻿import html as html_lib
+﻿from __future__ import annotations
+
+import html as html_lib
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from bs4 import BeautifulSoup
 
 from .config import get_config
+from .content_parse import limit_content_length
+from .html_detect import html_to_text
 from .noise_rules import load_noise_rules
-from .url_text import _get_hostname, _html_to_text, _limit_content_length
+from .url_helpers import get_hostname
 
 logger = logging.getLogger(__name__)
 
-_INTERNAL_TUNING: Dict[str, Dict[str, Any]] = {
+_INTERNAL_TUNING: dict[str, dict[str, Any]] = {
     "quality": {
         "adapter_min_quality": 10,
         "general_min_quality": 30,
@@ -52,14 +56,14 @@ _INTERNAL_TUNING: Dict[str, Dict[str, Any]] = {
 }
 
 
-def _is_noise_line(line: str) -> bool:
+def _is_noise_line(line: str, *, _rules=None) -> bool:
     if not line:
         return False
     stripped = line.strip()
     if not stripped:
         return False
 
-    regex_rules, substring_rules = load_noise_rules()
+    regex_rules, substring_rules = _rules if _rules is not None else load_noise_rules()
     for pattern in regex_rules:
         if pattern.match(stripped):
             return True
@@ -76,14 +80,15 @@ def _is_noise_line(line: str) -> bool:
 def _clean_extracted_text(text: str) -> str:
     if not text:
         return ""
-    lines: List[str] = []
+    rules = load_noise_rules()
+    lines: list[str] = []
     for raw_line in (text or "").splitlines():
         line = raw_line.strip()
         if not line:
             if lines and lines[-1] != "":
                 lines.append("")
             continue
-        if _is_noise_line(line):
+        if _is_noise_line(line, _rules=rules):
             continue
         lines.append(line)
     cleaned = "\n".join(lines)
@@ -94,7 +99,8 @@ def _clean_extracted_text(text: str) -> str:
 def _clean_extracted_markdown(markdown: str) -> str:
     if not markdown:
         return ""
-    lines: List[str] = []
+    rules = load_noise_rules()
+    lines: list[str] = []
     in_code_block = False
     for raw_line in (markdown or "").splitlines():
         line = raw_line.rstrip()
@@ -113,7 +119,7 @@ def _clean_extracted_markdown(markdown: str) -> str:
             line = re.sub(r"\s*#\s*$", "", line)
             stripped = line.strip()
         candidate = stripped.lstrip("#").strip() if stripped.startswith("#") else stripped
-        if _is_noise_line(candidate):
+        if _is_noise_line(candidate, _rules=rules):
             continue
         lines.append(line)
 
@@ -122,20 +128,21 @@ def _clean_extracted_markdown(markdown: str) -> str:
     return cleaned
 
 
-def _score_content(content: str) -> Dict[str, Any]:
+def _score_content(content: str) -> dict[str, Any]:
     content = (content or "").strip()
     lines = [ln.strip() for ln in content.splitlines() if ln.strip()]
     char_len = len(content)
     line_count = len(lines)
 
-    meaningful_lines: List[str] = []
+    meaningful_lines: list[str] = []
     for ln in lines:
         if re.match(r"^\s*```", ln):
             continue
         meaningful_lines.append(ln)
     unique_source = meaningful_lines or lines
     unique_ratio = (len(set(unique_source)) / len(unique_source)) if unique_source else 0.0
-    noise_hits = sum(1 for ln in lines if _is_noise_line(ln))
+    rules = load_noise_rules()
+    noise_hits = sum(1 for ln in lines if _is_noise_line(ln, _rules=rules))
     noise_ratio = (noise_hits / line_count) if line_count else 0.0
     short_source = meaningful_lines or lines
     short_hits = sum(1 for ln in short_source if len(ln) <= 12)
@@ -179,24 +186,24 @@ def _score_content(content: str) -> Dict[str, Any]:
     }
 
 
-def _extract_title_and_description(html: str) -> Tuple[str, str]:
+def _meta_content(soup: BeautifulSoup, attrs: dict[str, str]) -> str:
+    tag = soup.find("meta", attrs=attrs)
+    if not tag:
+        return ""
+    return (tag.get("content") or "").strip()
+
+
+def _extract_title_and_description(html: str) -> tuple[str, str]:
     soup = BeautifulSoup(html or "", "lxml")
-
-    def _meta(attrs: Dict[str, str]) -> str:
-        tag = soup.find("meta", attrs=attrs)
-        if not tag:
-            return ""
-        return (tag.get("content") or "").strip()
-
     title = (
-        _meta({"property": "og:title"})
-        or _meta({"name": "twitter:title"})
+        _meta_content(soup, {"property": "og:title"})
+        or _meta_content(soup, {"name": "twitter:title"})
         or (soup.find("title").get_text(strip=True) if soup.find("title") else "")
     )
     description = (
-        _meta({"property": "og:description"})
-        or _meta({"name": "twitter:description"})
-        or _meta({"name": "description"})
+        _meta_content(soup, {"property": "og:description"})
+        or _meta_content(soup, {"name": "twitter:description"})
+        or _meta_content(soup, {"name": "description"})
     )
     return title.strip(), description.strip()
 
@@ -204,13 +211,13 @@ def _extract_title_and_description(html: str) -> Tuple[str, str]:
 def _trafilatura_extract(
     html: str,
     *,
-    url: Optional[str],
+    url: str | None,
     output_format: str,
     favor_precision: bool = False,
     favor_recall: bool = False,
     fast: bool = False,
     include_links: bool = False,
-) -> Optional[str]:
+) -> str | None:
     try:
         from trafilatura import extract
     except Exception as e:
@@ -243,7 +250,7 @@ def _trafilatura_extract(
         return None
 
 
-def _trafilatura_baseline(html: str) -> Optional[str]:
+def _trafilatura_baseline(html: str) -> str | None:
     try:
         from trafilatura import baseline
     except Exception:
@@ -255,7 +262,7 @@ def _trafilatura_baseline(html: str) -> Optional[str]:
         return None
 
 
-def _extract_csdn_html_pruned(html: str) -> Optional[str]:
+def _extract_csdn_html_pruned(html: str) -> str | None:
     soup = BeautifulSoup(html or "", "lxml")
     title = ""
     title_tag = soup.select_one("h1.title-article") or soup.select_one("h1")
@@ -293,7 +300,7 @@ def _extract_csdn_html_pruned(html: str) -> Optional[str]:
     return f"<html><body>{title_html}{str(main)}</body></html>"
 
 
-def _extract_github_html_pruned(html: str) -> Optional[str]:
+def _extract_github_html_pruned(html: str) -> str | None:
     soup = BeautifulSoup(html or "", "lxml")
     title, description = _extract_title_and_description(html)
 
@@ -326,7 +333,7 @@ def _extract_github_html_pruned(html: str) -> Optional[str]:
     return f"<html><body>{title_html}{desc_html}{str(readme)}</body></html>"
 
 
-def _extract_discourse_html_pruned(html: str) -> Optional[str]:
+def _extract_discourse_html_pruned(html: str) -> str | None:
     soup = BeautifulSoup(html or "", "lxml")
     root = soup.select_one("#main-outlet") or soup.select_one("main") or soup.body
     if not root:
@@ -334,7 +341,7 @@ def _extract_discourse_html_pruned(html: str) -> Optional[str]:
 
     articles = root.select("article[data-post-id]") or root.select("article.topic-post")
 
-    cooked_blocks: List[str] = []
+    cooked_blocks: list[str] = []
     if articles:
         for article in articles:
             cooked = article.select_one(".cooked")
@@ -368,7 +375,7 @@ def _extract_discourse_html_pruned(html: str) -> Optional[str]:
     return f"<html><body>{title_html}{body_html}</body></html>"
 
 
-def _extract_bangumi_html_pruned(html: str) -> Optional[str]:
+def _extract_bangumi_html_pruned(html: str) -> str | None:
     soup = BeautifulSoup(html or "", "lxml")
     title, description = _extract_title_and_description(html)
 
@@ -377,7 +384,7 @@ def _extract_bangumi_html_pruned(html: str) -> Optional[str]:
     if not col_a and not col_b:
         return None
 
-    parts: List[str] = []
+    parts: list[str] = []
     if title:
         parts.append(f"<h1>{html_lib.escape(title)}</h1>")
     if description:
@@ -391,7 +398,7 @@ def _extract_bangumi_html_pruned(html: str) -> Optional[str]:
     return f"<html><body>{combined}</body></html>"
 
 
-def _extract_steamcommunity_html_pruned(html: str) -> Optional[str]:
+def _extract_steamcommunity_html_pruned(html: str) -> str | None:
     soup = BeautifulSoup(html or "", "lxml")
     title, description = _extract_title_and_description(html)
 
@@ -420,7 +427,7 @@ def _extract_steamcommunity_html_pruned(html: str) -> Optional[str]:
     return f"<html><body>{title_html}{desc_html}{str(main)}</body></html>"
 
 
-def _extract_discourse_text_pruned(html: str, *, url: str) -> Optional[str]:
+def _extract_discourse_text_pruned(html: str, *, url: str) -> str | None:
     del url
     title, _ = _extract_title_and_description(html)
     title = (title or "").strip()
@@ -431,7 +438,7 @@ def _extract_discourse_text_pruned(html: str, *, url: str) -> Optional[str]:
     if not topic_title or len(topic_title) < 4:
         return None
 
-    raw_text = _html_to_text(html)
+    raw_text = html_to_text(html)
     if not raw_text:
         return None
     lines = [ln.strip() for ln in raw_text.splitlines() if ln.strip()]
@@ -458,7 +465,7 @@ def _extract_discourse_text_pruned(html: str, *, url: str) -> Optional[str]:
 
     sliced = lines[start_idx:end_idx]
 
-    cleaned_lines: List[str] = []
+    cleaned_lines: list[str] = []
     for ln in sliced:
         if not ln:
             continue
@@ -473,7 +480,7 @@ def _extract_discourse_text_pruned(html: str, *, url: str) -> Optional[str]:
     return kept or None
 
 
-def _build_degraded_markdown(html: str) -> Optional[str]:
+def _build_degraded_markdown(html: str) -> str | None:
     title, description = _extract_title_and_description(html)
     if not title and not description:
         return None
@@ -485,7 +492,7 @@ def _build_degraded_markdown(html: str) -> Optional[str]:
     return "\n\n".join(parts).strip()
 
 
-def _build_degraded_text(html: str) -> Optional[str]:
+def _build_degraded_text(html: str) -> str | None:
     title, description = _extract_title_and_description(html)
     if not title and not description:
         return None
@@ -497,7 +504,7 @@ def _build_degraded_text(html: str) -> Optional[str]:
     return "\n\n".join(parts).strip()
 
 
-def _extractor_bonus(extractor: str, *, tuning: Dict[str, Any]) -> int:
+def _extractor_bonus(extractor: str, *, tuning: dict[str, Any]) -> int:
     if extractor.startswith("adapter:"):
         return int(tuning["bonus_adapter"])
     if extractor.startswith("trafilatura:precision"):
@@ -511,25 +518,25 @@ def _extractor_bonus(extractor: str, *, tuning: Dict[str, Any]) -> int:
     return 0
 
 
-def _rank_key(item: Dict[str, Any], *, tuning: Dict[str, Any]) -> Tuple[int, int, int]:
+def _rank_key(item: dict[str, Any], *, tuning: dict[str, Any]) -> tuple[int, int, int]:
     q = int(item.get("quality_score", 0) or 0)
     bonus = _extractor_bonus(item.get("extractor", "") or "", tuning=tuning)
     char_len = int(item.get("char_len", 0) or 0)
     return (q + bonus, q, char_len)
 
 
-def _is_high_quality_candidate(item: Dict[str, Any], *, min_chars: int, min_quality: int) -> bool:
+def _is_high_quality_candidate(item: dict[str, Any], *, min_chars: int, min_quality: int) -> bool:
     return int(item.get("char_len", 0) or 0) >= min_chars and int(item.get("quality_score", 0) or 0) >= min_quality
 
 
-def _extract_best_content(html: str, *, url: str, output_format: str) -> Dict[str, Any]:
+def _extract_best_content(html: str, *, url: str, output_format: str) -> dict[str, Any]:
     cfg = get_config()
-    host = _get_hostname(url)
+    host = get_hostname(url)
     strategy = (cfg.extraction.strategy or "quality").lower()
 
     min_chars = cfg.extraction.markdown_min_chars if output_format == "markdown" else cfg.extraction.text_min_chars
 
-    candidates: List[Dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
     seen_cleaned: set[str] = set()
 
     tuning = _INTERNAL_TUNING.get(strategy, _INTERNAL_TUNING["quality"])
@@ -539,7 +546,7 @@ def _extract_best_content(html: str, *, url: str, output_format: str) -> Dict[st
     def _clean_for_mode(text: str) -> str:
         return _clean_extracted_markdown(text) if output_format == "markdown" else _clean_extracted_text(text)
 
-    def _add_candidate(content: Optional[str], extractor: str) -> Optional[Dict[str, Any]]:
+    def _add_candidate(content: str | None, extractor: str) -> dict[str, Any] | None:
         if not content:
             return None
         cleaned = _clean_for_mode(content)
@@ -559,7 +566,7 @@ def _extract_best_content(html: str, *, url: str, output_format: str) -> Dict[st
         candidates.append(item)
         return item
 
-    def _should_early_stop(item: Optional[Dict[str, Any]]) -> bool:
+    def _should_early_stop(item: dict[str, Any] | None) -> bool:
         if not item or not bool(tuning["early_stop_enabled"]):
             return False
         if not quality_first:
@@ -571,7 +578,7 @@ def _extract_best_content(html: str, *, url: str, output_format: str) -> Dict[st
             min_quality=int(tuning["early_stop_quality"]),
         )
 
-    def _run_adapter_candidates() -> Optional[Dict[str, Any]]:
+    def _run_adapter_candidates() -> dict[str, Any] | None:
         if host.endswith("csdn.net"):
             pruned = _extract_csdn_html_pruned(html)
             if pruned:
@@ -604,7 +611,7 @@ def _extract_best_content(html: str, *, url: str, output_format: str) -> Dict[st
                 item = _add_candidate(_trafilatura_baseline(pruned), "adapter:bangumi+baseline")
                 if _should_early_stop(item):
                     return item
-                item = _add_candidate(_html_to_text(pruned), "adapter:bangumi+bs4")
+                item = _add_candidate(html_to_text(pruned), "adapter:bangumi+bs4")
                 if _should_early_stop(item):
                     return item
 
@@ -614,7 +621,7 @@ def _extract_best_content(html: str, *, url: str, output_format: str) -> Dict[st
                 item = _add_candidate(_trafilatura_baseline(pruned), "adapter:steamcommunity+baseline")
                 if _should_early_stop(item):
                     return item
-                item = _add_candidate(_html_to_text(pruned), "adapter:steamcommunity+bs4")
+                item = _add_candidate(html_to_text(pruned), "adapter:steamcommunity+bs4")
                 if _should_early_stop(item):
                     return item
 
@@ -639,9 +646,9 @@ def _extract_best_content(html: str, *, url: str, output_format: str) -> Dict[st
 
         return None
 
-    def _run_core_candidates() -> Optional[Dict[str, Any]]:
+    def _run_core_candidates() -> dict[str, Any] | None:
         # Keep extractor order strategy-dependent to reduce unnecessary expensive paths.
-        plans: List[Tuple[str, Any]] = []
+        plans: list[tuple[str, Any]] = []
         plans.append(
             (
                 "trafilatura:precision",
@@ -673,7 +680,7 @@ def _extract_best_content(html: str, *, url: str, output_format: str) -> Dict[st
         if not speed_first:
             plans.append(("trafilatura:baseline", lambda: _trafilatura_baseline(html)))
 
-        plans.append(("bs4:text", lambda: _html_to_text(html)))
+        plans.append(("bs4:text", lambda: html_to_text(html)))
 
         for extractor, fn in plans:
             item = _add_candidate(fn(), extractor)
@@ -736,26 +743,20 @@ def _extract_best_content(html: str, *, url: str, output_format: str) -> Dict[st
     }
 
 
-def _extract_metadata(html: str) -> Dict[str, Any]:
+def _extract_metadata(html: str) -> dict[str, Any]:
     cfg = get_config()
     soup = BeautifulSoup(html or "", "lxml")
 
-    def _meta(attrs: Dict[str, str]) -> str:
-        tag = soup.find("meta", attrs=attrs)
-        if not tag:
-            return ""
-        return (tag.get("content") or "").strip()
-
     title = (
-        _meta({"property": "og:title"})
-        or _meta({"name": "twitter:title"})
+        _meta_content(soup, {"property": "og:title"})
+        or _meta_content(soup, {"name": "twitter:title"})
         or (soup.find("title").get_text(strip=True) if soup.find("title") else "")
     )
 
     description = (
-        _meta({"property": "og:description"})
-        or _meta({"name": "twitter:description"})
-        or _meta({"name": "description"})
+        _meta_content(soup, {"property": "og:description"})
+        or _meta_content(soup, {"name": "twitter:description"})
+        or _meta_content(soup, {"name": "description"})
     )
 
     canonical_url = ""
@@ -768,7 +769,7 @@ def _extract_metadata(html: str) -> Dict[str, Any]:
         links.append({"text": a.get_text(strip=True), "href": a["href"]})
 
     links_str = str(links)
-    _, was_truncated = _limit_content_length(links_str)
+    _, was_truncated = limit_content_length(links_str)
     if was_truncated:
         avg_length = len(links_str) / len(links) if links else 0
         keep_count = max(1, int(cfg.max_token_limit * 4 / avg_length) if avg_length > 0 else 0)
