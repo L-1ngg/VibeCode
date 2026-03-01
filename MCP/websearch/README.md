@@ -52,17 +52,17 @@
 
 ### 模块职责说明
 
-| 模块 | 职责 |
-|---|---|
-| `config.py` | 从 `.env` / 环境变量 / 命令行统一解析所有配置，暴露 `AppConfig` 冻结数据类 |
-| `url_helpers.py` | URL 去重归一化、跟踪参数清理、重定向解包、`site:` 查询检测 |
-| `proxy.py` | 根据配置生成 `proxies` 字典、拼接 Cloudflare Worker 转发 URL |
-| `openai_client.py` | 调用 OpenAI 兼容 API（支持 SSE 流式），用于 AI 搜索摘要 |
-| `html_detect.py` | 检测反爬拦截页 / Cloudflare Challenge、HTML→纯文本转换 |
-| `content_parse.py` | 内容长度截断、从 AI 回复中解析 Markdown 链接和 SOURCES 块 |
-| `extraction.py` | 多策略正文提取（trafilatura precision/recall/fast/baseline + 站点适配器），质量评分与排序 |
-| `fetch_search_core.py` | Brave/DuckDuckGo 搜索引擎抓取、curl 重试、知乎 API 适配、Playwright 浏览器回退 |
-| `search.py` | MCP 工具注册入口，编排 AI 搜索 + 浏览器搜索并发、结果去重合并 |
+| 模块                   | 职责                                                                                      |
+| ---------------------- | ----------------------------------------------------------------------------------------- |
+| `config.py`            | 从 `.env` / 环境变量 / 命令行统一解析所有配置，暴露 `AppConfig` 冻结数据类                |
+| `url_helpers.py`       | URL 去重归一化、跟踪参数清理、重定向解包、`site:` 查询检测                                |
+| `proxy.py`             | 根据配置生成 `proxies` 字典、拼接 Cloudflare Worker 转发 URL                              |
+| `openai_client.py`     | 调用 OpenAI 兼容 API（支持 SSE 流式），用于 AI 搜索摘要                                   |
+| `html_detect.py`       | 检测反爬拦截页 / Cloudflare Challenge、HTML→纯文本转换                                    |
+| `content_parse.py`     | 内容长度截断、从 AI 回复中解析 Markdown 链接和 SOURCES 块                                 |
+| `extraction.py`        | 多策略正文提取（trafilatura precision/recall/fast/baseline + 站点适配器），质量评分与排序 |
+| `fetch_search_core.py` | Brave/DuckDuckGo 搜索引擎抓取、curl 重试、知乎 API 适配、Playwright 浏览器回退            |
+| `search.py`            | MCP 工具注册入口，编排 AI 搜索 + 浏览器搜索并发、结果去重合并                             |
 
 ## 3. 安装依赖
 
@@ -268,13 +268,7 @@ uv run WebSearch.py
       "name": "WebSearch",
       "type": "stdio",
       "command": "uv",
-      "args": [
-        "--directory",
-        "D:/Code/github/VibeCode/MCP/websearch",
-        "run",
-        "-m",
-        "websearch"
-      ]
+      "args": ["--directory", "/path/to/websearch", "run", "-m", "websearch"]
     }
   }
 }

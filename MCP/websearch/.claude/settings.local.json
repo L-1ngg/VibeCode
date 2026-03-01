@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(cd \"D:/Code/github/VibeCode/MCP/websearch\" && uv run python -c \"\nimport asyncio\nfrom websearch.tools.fetch_search_core import _fetch_with_playwright\nr = asyncio.run\\(_fetch_with_playwright\\('https://L1ngg.info', 'text'\\)\\)\nprint\\('success:', r.get\\('success'\\)\\)\nprint\\('error:', r.get\\('error',''\\)[:300] if r.get\\('error'\\) else 'none'\\)\n\" 2>&1)"
-    ]
-  }
-}
