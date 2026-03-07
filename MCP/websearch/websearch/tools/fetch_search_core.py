@@ -29,7 +29,7 @@ from ..utils.html_detect import (
     looks_like_blocked_text,
     looks_like_challenge_text,
 )
-from ..utils.proxy import get_proxies, get_target_url
+from ..utils.proxy import apply_worker_auth, get_proxies, get_target_url
 from ..utils.url_helpers import (
     extract_zhihu_answer_id,
     resolve_playwright_executable_path,
@@ -83,7 +83,7 @@ async def _search_brave_core(
         if cfg.cf_worker_url:
             logger.info("Via Cloudflare Worker: %s", visit_url)
 
-        request_headers = _default_headers(cfg)
+        request_headers = apply_worker_auth(_default_headers(cfg), visit_url) or {}
 
         response = curl_requests.get(
             visit_url,
@@ -171,7 +171,7 @@ async def _search_duckduckgo_core(
             if cfg.cf_worker_url:
                 logger.info("Via Cloudflare Worker: %s", visit_url)
 
-            request_headers = _default_headers(cfg)
+            request_headers = apply_worker_auth(_default_headers(cfg), visit_url) or {}
 
             response = _curl_get_with_retries(
                 visit_url,
@@ -215,7 +215,7 @@ def _curl_get_with_retries(
 ) -> curl_requests.Response:
     cfg = get_config()
     effective_timeout_s = timeout_s if timeout_s is not None else cfg.fetch_timeout_s
-    request_headers = {**_default_headers(cfg), **(headers or {})}
+    request_headers = apply_worker_auth({**_default_headers(cfg), **(headers or {})}, url) or {}
 
     max_attempts = max(1, retries)
     last_error: Exception | None = None

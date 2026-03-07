@@ -23,13 +23,26 @@ class ConfigRuntimeTests(unittest.TestCase):
         env = {
             "PROXY": "http://env:7890",
             "OPENAI_BASE_URL": "https://env.example/v1",
+            "CF_WORKER_TOKEN": "env-token",
         }
         cfg = build_config(
-            argv=["--proxy", "http://cli:7890", "--openai-base-url", "https://cli.example/v1"],
+            argv=[
+                "--proxy",
+                "http://cli:7890",
+                "--openai-base-url",
+                "https://cli.example/v1",
+                "--cf-worker-token",
+                "cli-token",
+            ],
             env=env,
         )
         self.assertEqual(cfg.proxy, "http://cli:7890")
         self.assertEqual(cfg.openai_base_url, "https://cli.example/v1")
+        self.assertEqual(cfg.cf_worker_token, "cli-token")
+
+    def test_build_config_supports_worker_token_fallback_env_name(self) -> None:
+        cfg = build_config(argv=[], env={"API_TOKEN": "worker-token"})
+        self.assertEqual(cfg.cf_worker_token, "worker-token")
 
     def test_build_config_invalid_int_falls_back_default(self) -> None:
         env = {

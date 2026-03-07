@@ -64,6 +64,7 @@ class ExtractionConfig:
 class AppConfig:
     proxy: Optional[str]
     cf_worker_url: Optional[str]
+    cf_worker_token: Optional[str]
     openai_api_key: Optional[str]
     openai_base_url: Optional[str]
     openai_model: str
@@ -173,6 +174,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="WebSearch MCP Server")
     parser.add_argument("--proxy", type=str, default=None, help="Local proxy, e.g. http://127.0.0.1:7890")
     parser.add_argument("--cf-worker", type=str, default=None, help="Cloudflare Worker URL")
+    parser.add_argument("--cf-worker-token", type=str, default=None, help="Cloudflare Worker bearer token")
     parser.add_argument("--openai-api-key", type=str, default=None, help="OpenAI API key")
     parser.add_argument("--openai-base-url", type=str, default=None, help="OpenAI-compatible base URL")
     parser.add_argument("--openai-model", type=str, default=None, help="OpenAI model name")
@@ -203,6 +205,12 @@ def build_config(
 
     proxy = _normalize_optional(_pick(args.proxy, env_map, "PROXY"))
     cf_worker_url = _normalize_optional(_pick(args.cf_worker, env_map, "CF_WORKER"))
+    cf_worker_token = _normalize_optional(
+        args.cf_worker_token
+        if args.cf_worker_token is not None
+        else env_map.get("CF_WORKER_TOKEN")
+        or env_map.get("API_TOKEN")
+    )
     openai_api_key = _normalize_optional(_pick(args.openai_api_key, env_map, "OPENAI_API_KEY"))
     openai_base_url = _normalize_optional(_pick(args.openai_base_url, env_map, "OPENAI_BASE_URL"))
     openai_model = _normalize_optional(_pick(args.openai_model, env_map, "OPENAI_MODEL", "gpt-4o")) or "gpt-4o"
@@ -308,6 +316,7 @@ def build_config(
     return AppConfig(
         proxy=proxy,
         cf_worker_url=cf_worker_url,
+        cf_worker_token=cf_worker_token,
         openai_api_key=openai_api_key,
         openai_base_url=openai_base_url,
         openai_model=openai_model,

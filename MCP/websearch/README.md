@@ -44,7 +44,6 @@
 │     ├─ test_extraction_config_surface.py
 │     ├─ test_retry_logic.py
 │     └─ test_search_diagnostics.py
-├─ worker/                       # Cloudflare Worker 转发模板
 ├─ WebSearch.py
 ├─ pyproject.toml
 └─ README.md
@@ -95,6 +94,7 @@ OPENAI_MODEL=gpt-4o
 
 PROXY=http://127.0.0.1:7890
 # CF_WORKER=https://your-worker.workers.dev
+# CF_WORKER_TOKEN=your-worker-api-token
 
 PLAYWRIGHT_FALLBACK=1
 PLAYWRIGHT_TIMEOUT_MS=60000
@@ -122,101 +122,13 @@ LOG_LEVEL=INFO
 
 - 命令行参数 > 系统环境变量 > `websearch/.env`
 
-### Cloudflare Worker 转发模板
+### 外部 Cloudflare Worker 接入
 
-仓库已提供可直接部署的 Worker 模板：
-
-- `worker/wrangler.toml`
-- `worker/src/index.ts`
-- `worker/README.md`
-
-启用后，在 `websearch/.env` 中设置：
-
-```env
-CF_WORKER=https://your-worker-domain
-```
-
-### Cloudflare Worker + Wrangler 部署指南
-
-以下步骤用于把 `worker/` 部署为可用的转发服务，并接入当前 MCP。
-
-#### 1) 准备 Wrangler
-
-任选一种方式安装：
-
-```bash
-# npm
-npm i -g wrangler
-
-# bun（推荐本项目已有 bun 环境时）
-bun add -g wrangler
-```
-
-检查版本：
-
-```bash
-wrangler --version
-# 或
-bun wrangler --version
-```
-
-登录 Cloudflare：
-
-```bash
-wrangler login
-# 或
-bun wrangler login
-```
-
-检查登录状态：
-
-```bash
-wrangler whoami
-# 或
-bun wrangler whoami
-```
-
-#### 2) 部署 Worker
-
-进入 Worker 目录并部署：
-
-```bash
-cd worker
-wrangler deploy
-# 或
-bun wrangler deploy
-```
-
-部署成功后会得到一个 `https://<name>.<subdomain>.workers.dev` 地址。
-
-#### 3) 验证 Worker 可用性
-
-```bash
-# 健康检查
-curl "https://<your-worker>.workers.dev/healthz"
-
-# 缺少 url 参数（应返回 400）
-curl "https://<your-worker>.workers.dev/"
-
-# 协议拦截（应返回 400）
-curl "https://<your-worker>.workers.dev/?url=ftp%3A%2F%2Fexample.com"
-
-# 白名单内域名（应成功）
-curl "https://<your-worker>.workers.dev/?url=https%3A%2F%2Fduckduckgo.com%2Fhtml%2F%3Fq%3Dcloudflare"
-```
-
-如果你的本机网络需要代理，请使用：
-
-```bash
-curl --proxy http://127.0.0.1:xxx "https://<your-worker>.workers.dev/healthz"
-```
-
-#### 4) 接入 MCP 配置
-
-在 `websearch/.env` 设置：
+如果你已经有自行部署好的 Cloudflare Worker，可直接在 `websearch/.env` 中配置：
 
 ```env
 CF_WORKER=https://<your-worker>.workers.dev
+CF_WORKER_TOKEN=your-worker-api-token
 ```
 
 建议同时确认：

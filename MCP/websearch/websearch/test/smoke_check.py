@@ -104,6 +104,7 @@ def _run_config_checks(require_llm: bool) -> Dict[str, object]:
             "LLM_effectively_ready": llm_ready,
             "PROXY_CONFIG": cfg.proxy,
             "CF_WORKER_URL": cfg.cf_worker_url,
+            "CF_WORKER_TOKEN_set": bool(cfg.cf_worker_token),
             "PLAYWRIGHT_FALLBACK": cfg.playwright_fallback,
             "PLAYWRIGHT_TIMEOUT_MS": cfg.playwright_timeout_ms,
             "PLAYWRIGHT_CHALLENGE_WAIT": cfg.playwright_challenge_wait,
