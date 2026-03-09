@@ -1,60 +1,11 @@
-# OS / editor junk
-.DS_Store
-Thumbs.db
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# Python
-__pycache__/
-*.py[cod]
-*.pyd
-*.so
-.python-version
-.venv/
-venv/
-ENV/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.hypothesis/
-.tox/
-.nox/
-.coverage
-.coverage.*
-htmlcov/
-build/
-dist/
-.eggs/
-*.egg-info/
-pip-wheel-metadata/
-
-# Environment files (keep templates)
 .env
 .env.*
 !.env.example
-websearch/.env
-websearch/.env.*
-!websearch/.env.example
 
-# Node / Bun
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-pnpm-debug.log*
-bun-debug.log*
-*.tsbuildinfo
+__pycache__/
+*.py[cod]
 
-# Cloudflare Worker local state
-.wrangler/
-worker/.wrangler/
+.uv-cache/
+.venv/
 
-# Logs / temp / cache
-*.log
-tmp/
-temp/
-.cache/
-
-# other
-.claude
+.pytest_cache/

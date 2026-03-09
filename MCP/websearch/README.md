@@ -1,244 +1,315 @@
-﻿# WebSearch MCP Server
+![这是图片](./images/title.png)
 
-一个基于 MCP（Model Context Protocol）的 Web 搜索与网页抓取服务，面向 CherryStudio 等支持 MCP 的客户端。
+<div align="center">
 
-当前版本采用 `websearch/` 作为核心包，推荐入口为 `python -m websearch`。
+<!-- # Grok Search MCP -->
 
-## 1. 项目特点
+[English](./docs/README_EN.md) | 简体中文
 
-- 搜索与抓取一体化：同时提供 `web_search` 与 `fetch` 两个 MCP 工具。
-- 搜索策略稳健：优先 Brave，失败时自动回退 DuckDuckGo，并对部分网络错误做重试。
-- 网页抓取增强：常规提取失败时可自动回退 Playwright。
-- 配置集中管理：默认从 `websearch/.env` 读取配置，支持环境变量和命令行覆盖。
-- 可观测性增强：搜索结果支持返回 `diagnostics` 字段，便于排查回退与异常链路。
+**Grok-with-Tavily MCP，为 Claude Code 提供更完善的网络访问能力**
 
-## 2. 项目结构
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT) [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/) [![FastMCP](https://img.shields.io/badge/FastMCP-2.0.0+-green.svg)](https://github.com/jlowin/fastmcp)
 
-```text
-.
-├─ websearch/
-│  ├─ __init__.py
-│  ├─ __main__.py
-│  ├─ .env.example
-│  ├─ tools/
-│  │  ├─ search.py              # MCP 工具入口：web_search / fetch
-│  │  └─ fetch_search_core.py   # 搜索引擎抓取、Playwright 回退、重试逻辑
-│  ├─ utils/
-│  │  ├─ config.py              # 集中配置管理（AppConfig / PlaywrightConfig / ExtractionConfig）
-│  │  ├─ env_parser.py          # .env 文件解析
-│  │  ├─ extraction.py          # HTML 正文提取、质量评分、站点适配器（CSDN/GitHub/Discourse 等）
-│  │  ├─ noise_rules.py         # 噪声行规则加载
-│  │  ├─ url_helpers.py         # URL 归一化、重定向解包、hostname 工具
-│  │  ├─ proxy.py               # 代理配置、Cloudflare Worker URL 拼接
-│  │  ├─ openai_client.py       # OpenAI 兼容 Chat Completions 客户端
-│  │  ├─ html_detect.py         # 反爬/Challenge 页面检测、HTML→纯文本
-│  │  ├─ content_parse.py       # 内容截断、Markdown 链接解析、URL/AI标签清理
-│  │  ├─ url_text.py            # 向后兼容 re-export shim（已拆分至上述模块）
-│  │  └─ rules/
-│  │     ├─ noise_en.txt
-│  │     └─ noise_zh.txt
-│  └─ test/
-│     ├─ smoke_check.py
-│     ├─ test_config_env_parser.py
-│     ├─ test_config_runtime.py
-│     ├─ test_extraction_config_surface.py
-│     ├─ test_retry_logic.py
-│     └─ test_search_diagnostics.py
-├─ WebSearch.py
-├─ pyproject.toml
-└─ README.md
+</div>
+
+---
+
+## 一、概述
+
+Grok Search MCP 是一个基于 [FastMCP](https://github.com/jlowin/fastmcp) 构建的 MCP 服务器，采用**双引擎架构**：**Grok** 负责 AI 驱动的智能搜索，**Tavily** 负责高保真网页抓取与站点映射，各取所长为 Claude Code / Cherry Studio 等LLM Client提供完整的实时网络访问能力。
+
+## 项目来源
+
+本仓库基于 [GuDaStudio/GrokSearch](https://github.com/GuDaStudio/GrokSearch) 进行修改与扩展，保留原项目的 MIT License 及版权声明。
+
+当前仓库包含针对本地 `.env` 配置、多 Tavily API Key 轮询等功能的二次开发；新增功能与后续维护由当前仓库维护者负责，与原项目仓库的发布节奏和维护计划相互独立。
+
+### 相对原仓库的新增功能
+
+在保留原项目核心能力的基础上，当前仓库主要围绕配置读取与 Tavily 接入方式做了以下补充：
+
+- **本地配置读取增强**：支持从项目根目录 `.env`、`~/.config/web-search/.env` 以及 `GROK_SEARCH_ENV_FILE` 指定的 env 文件读取配置，补充原有环境变量方式。
+- **多 Tavily Key 支持**：支持通过 `TAVILY_API_KEYS` 配置多个 Tavily API Key，并在单个 Key 失败后按冷却时间自动轮换。
+- **Tavily 调用统一封装**：将 Tavily 的 `search`、`extract`、`map` 调用统一收敛到客户端中，复用同一套 Key 选择、失败冷却与错误处理逻辑。
+- **多 Key 场景兼容修正**：额外信源补充、网页抓取与站点映射等 Tavily 相关能力，改为基于多 Key 配置判断可用性，使 `TAVILY_API_KEYS` 场景下能够正常工作。
+- **配置诊断信息补充**：`get_config_info` 会额外展示已加载的 env 文件列表以及 Tavily Key 数量，便于排查配置来源与多 Key 状态。
+
+```
+Claude ──MCP──► Grok Search Server
+                  ├─ web_search  ───► Grok API（AI 搜索）
+                  ├─ web_fetch   ───► Tavily Extract → Firecrawl Scrape（内容抓取，自动降级）
+                  └─ web_map     ───► Tavily Map（站点映射）
 ```
 
-### 模块职责说明
+### 功能特性
 
-| 模块                   | 职责                                                                                      |
-| ---------------------- | ----------------------------------------------------------------------------------------- |
-| `config.py`            | 从 `.env` / 环境变量 / 命令行统一解析所有配置，暴露 `AppConfig` 冻结数据类                |
-| `url_helpers.py`       | URL 去重归一化、跟踪参数清理、重定向解包、`site:` 查询检测                                |
-| `proxy.py`             | 根据配置生成 `proxies` 字典、拼接 Cloudflare Worker 转发 URL                              |
-| `openai_client.py`     | 调用 OpenAI 兼容 API（支持 SSE 流式），用于 AI 搜索摘要                                   |
-| `html_detect.py`       | 检测反爬拦截页 / Cloudflare Challenge、HTML→纯文本转换                                    |
-| `content_parse.py`     | 内容长度截断、从 AI 回复中解析 Markdown 链接和 SOURCES 块                                 |
-| `extraction.py`        | 多策略正文提取（trafilatura precision/recall/fast/baseline + 站点适配器），质量评分与排序 |
-| `fetch_search_core.py` | Brave/DuckDuckGo 搜索引擎抓取、curl 重试、知乎 API 适配、Playwright 浏览器回退            |
-| `search.py`            | MCP 工具注册入口，编排 AI 搜索 + 浏览器搜索并发、结果去重合并                             |
+- **双引擎**：Grok 搜索 + Tavily 抓取/映射，互补协作
+- **Firecrawl 托底**：Tavily 提取失败时自动降级到 Firecrawl Scrape，支持空内容自动重试
+- **OpenAI 兼容接口**，支持任意 Grok 镜像站
+- **自动时间注入**（检测时间相关查询，注入本地时间上下文）
+- 一键禁用 Claude Code 官方 WebSearch/WebFetch，强制路由到本工具
+- 智能重试（支持 Retry-After 头解析 + 指数退避）
+- 父进程监控（Windows 下自动检测父进程退出，防止僵尸进程）
 
-## 3. 安装依赖
+### 效果展示
 
-在项目根目录执行：
+我们以在`cherry studio`中配置本MCP为例，展示了`claude-opus-4.6`模型如何通过本项目实现外部知识搜集，降低幻觉率。
+![](./images/wogrok.png)
+如上图，**为公平实验，我们打开了claude模型内置的搜索工具**，然而opus 4.6仍然相信自己的内部常识，不查询FastAPI的官方文档，以获取最新示例。
+![](./images/wgrok.png)
+如上图，当打开`web-search MCP`时，在相同的实验条件下，opus 4.6主动调用多次搜索，以**获取官方文档，回答更可靠。**
+
+### cherrystudio配置
+
+参数设置：
+```
+--from
+D:\Code\github\WebSearch
+web-search
+```
+环境变量：根据需要配置,这里展示我的配置项
+```
+GROK_API_URL=
+GROK_API_KEY=
+GROK_MODEL=grok-4.20-beta
+TAVILY_API_URL=https://api.tavily.com
+TAVILY_ENABLED=true
+GROK_DEBUG=false
+GROK_LOG_LEVEL=INFO
+GROK_SEARCH_ENV_FILE=D:\Code\github\WebSearch\.env
+```
+这里没有配置 `TAVILY_API_URLS` 的原因是我在.env文件里配置的，其余的配置项也可以写在.env文件里
+
+## 二、安装
+
+### 前置条件
+
+- Python 3.10+
+- [uv](https://docs.astral.sh/uv/getting-started/installation/)（推荐的 Python 包管理器）
+- Claude Code
+
+<details>
+<summary><b>安装 uv</b></summary>
 
 ```bash
-# 推荐
-uv sync
+# Linux/macOS
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# 或
-pip install -r requirements.txt
+# Windows PowerShell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-## 4. 环境配置
+> Windows 用户**强烈推荐**在 WSL 中运行本项目。
 
-先进入 `websearch/` 目录，复制模板配置：
+</details>
 
-```bash
-cp .env.example .env
+### 一键安装
+
+若之前安装过本项目，使用以下命令卸载旧版MCP。
+
+```
+claude mcp remove web-search
 ```
 
-服务启动时会读取：`websearch/.env`
+将以下命令中的环境变量替换为你自己的值后执行。Grok 接口需为 OpenAI 兼容格式；Tavily 为可选配置，未配置时工具 `web_fetch` 和 `web_map` 不可用。
 
-常用配置项：
+<details> <summary>如果遇到 SSL / 证书验证错误</summary>
 
-```env
-OPENAI_API_KEY=sk-xxx
-OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_MODEL=gpt-4o
+在部分企业网络或代理环境中，可能会出现类似错误：
 
-PROXY=http://127.0.0.1:7890
-# CF_WORKER=https://your-worker.workers.dev
-# CF_WORKER_TOKEN=your-worker-api-token
+certificate verify failed
+self signed certificate in certificate chain
 
-PLAYWRIGHT_FALLBACK=1
-PLAYWRIGHT_TIMEOUT_MS=60000
-PLAYWRIGHT_CHALLENGE_WAIT=20
-PW_HEADLESS=1
-PW_VIEWPORT=1366x768
+可以在 uvx 参数中添加 --native-tls，使其使用系统证书库：
 
-SEARCH_MAX_PER_DOMAIN=2
-
-# quality / balanced / speed
-EXTRACTION_STRATEGY=quality
-EXTRACTION_MARKDOWN_MIN_CHARS=120
-EXTRACTION_TEXT_MIN_CHARS=200
-
-# DEBUG / INFO / WARNING / ERROR / CRITICAL
-LOG_LEVEL=INFO
-```
-
-说明：
-
-- 仅对外暴露 `EXTRACTION_STRATEGY`、`EXTRACTION_MARKDOWN_MIN_CHARS`、`EXTRACTION_TEXT_MIN_CHARS`。
-- 旧的 11 个 `EXTRACTION_*` 内部调优变量已移除，不再生效。
-
-优先级：
-
-- 命令行参数 > 系统环境变量 > `websearch/.env`
-
-### 外部 Cloudflare Worker 接入
-
-如果你已经有自行部署好的 Cloudflare Worker，可直接在 `websearch/.env` 中配置：
-
-```env
-CF_WORKER=https://<your-worker>.workers.dev
-CF_WORKER_TOKEN=your-worker-api-token
-```
-
-建议同时确认：
-
-```env
-SEARCH_TIMEOUT_S=60
-FETCH_TIMEOUT_S=20
-PLAYWRIGHT_FALLBACK=1
-```
-
-## 5. 启动方式
-
-推荐方式：
-
-```bash
-uv run -m websearch
-```
-
-兼容脚本入口：
-
-```bash
-uv run WebSearch.py
-```
-
-## 6. MCP 工具
-
-### `web_search(query: str)`
-
-- 执行网页搜索，优先 Brave，失败时自动回退 DuckDuckGo。
-- 可选返回 AI 总结（需要正确配置 OpenAI 相关变量）。
-- 返回搜索结果列表，并附带 `diagnostics` 用于排查后端/回退/错误信息。
-
-### `fetch(url: str, headers: dict[str, str] | None = None)`
-
-- 抓取网页并提取正文 Markdown。
-- 支持站点适配提取（如知乎、Discourse）。
-- 遇到挑战页或拦截场景时可自动回退 Playwright。
-
-## 7. CherryStudio 配置
-
-在 CherryStudio 的 MCP 配置中添加：
-
-### Windows 示例
-
-```json
-{
-  "mcpServers": {
-    "websearch": {
-      "name": "WebSearch",
-      "type": "stdio",
-      "command": "uv",
-      "args": ["--directory", "/path/to/websearch", "run", "-m", "websearch"]
-    }
+claude mcp add-json web-search --scope user '{
+  "type": "stdio",
+  "command": "uvx",
+  "args": [
+    "--native-tls",
+    "--from",
+    "git+https://github.com/GuDaStudio/GrokSearch@grok-with-tavily",
+    "web-search"
+  ],
+  "env": {
+    "GROK_API_URL": "https://your-api-endpoint.com/v1",
+    "GROK_API_KEY": "your-grok-api-key",
+    "TAVILY_API_KEYS": ["tvly-your-tavily-key1", "tvly-your-tavily-key2"],
+    "TAVILY_API_URL": "https://api.tavily.com"
   }
-}
+}'
+
+</details> ```
+
+也支持在本地 `.env` 中配置 Tavily。服务会按以下顺序读取配置：
+
+1. MCP Client 显式传入的环境变量（如 Cherry Studio / Claude Code 的 `env`）
+2. 项目根目录 `.env`
+3. `~/.config/web-search/.env`
+
+示例：
+
+```env
+TAVILY_API_URL=https://api.tavily.com
+TAVILY_API_KEYS=["tvly-key-1","tvly-key-2","tvly-key-3"]
 ```
 
-### macOS / Linux 示例
+如果只配置单个 Key，也仍然兼容旧写法：
 
-```json
-{
-  "mcpServers": {
-    "websearch": {
-      "name": "WebSearch",
-      "type": "stdio",
-      "command": "uv",
-      "args": ["--directory", "/path/to/websearch", "run", "-m", "websearch"]
-    }
-  }
-}
+```env
+TAVILY_API_URL=https://api.tavily.com
+TAVILY_API_KEY=tvly-your-tavily-key
 ```
 
-说明：
+除此之外，你还可以在`env`字段中配置更多环境变量
 
-- `command` 使用 `uv`，通过 `--directory` 指向项目根目录。
-- 确保目录下存在 `websearch/.env` 并已正确配置。
+| 变量 | 必填 | 默认值 | 说明 |
+|------|------|--------|------|
+| `GROK_API_URL` | ✅ | - | Grok API 地址（OpenAI 兼容格式） |
+| `GROK_API_KEY` | ✅ | - | Grok API 密钥 |
+| `GROK_MODEL` | ❌ | `grok-4-fast` | 默认模型（设置后优先于 `~/.config/web-search/config.json`） |
+| `TAVILY_API_KEY` | ❌ | - | 单个 Tavily API 密钥（兼容旧写法，用于 web_fetch / web_map） |
+| `TAVILY_API_KEYS` | ❌ | - | 多个 Tavily API 密钥，使用 JSON 数组格式配置，按轮询顺序使用 |
+| `TAVILY_API_URL` | ❌ | `https://api.tavily.com` | Tavily API 地址 |
+| `TAVILY_ENABLED` | ❌ | `true` | 是否启用 Tavily |
+| `TAVILY_KEY_COOLDOWN_SECONDS` | ❌ | `60` | 单个 Tavily Key 失败后的冷却秒数 |
+| `FIRECRAWL_API_KEY` | ❌ | - | Firecrawl API 密钥（Tavily 失败时托底） |
+| `FIRECRAWL_API_URL` | ❌ | `https://api.firecrawl.dev/v2` | Firecrawl API 地址 |
+| `GROK_DEBUG` | ❌ | `false` | 调试模式 |
+| `GROK_LOG_LEVEL` | ❌ | `INFO` | 日志级别 |
+| `GROK_LOG_DIR` | ❌ | `logs` | 日志目录 |
+| `GROK_RETRY_MAX_ATTEMPTS` | ❌ | `3` | 最大重试次数 |
+| `GROK_RETRY_MULTIPLIER` | ❌ | `1` | 重试退避乘数 |
+| `GROK_RETRY_MAX_WAIT` | ❌ | `10` | 重试最大等待秒数 |
 
-## 8. 本地自检
-
-快速检查：
+### 验证安装
 
 ```bash
-uv run -m websearch.test.smoke_check
+claude mcp list
 ```
 
-严格检查（要求 LLM 配置可用）：
+🍟 显示连接成功后，我们**十分推荐**在 Claude 对话中输入
 
-```bash
-uv run -m websearch.test.smoke_check --require-llm
+```
+调用 web-search toggle_builtin_tools，关闭Claude Code's built-in WebSearch and WebFetch tools
 ```
 
-## 9. 常见问题
+工具将自动修改**项目级** `.claude/settings.json` 的 `permissions.deny`，一键禁用 Claude Code 官方的 WebSearch 和 WebFetch，从而迫使claude code调用本项目实现搜索！
 
-### Q1：为什么没有 AI 总结？
+## 三、MCP 工具介绍
 
-- 通常是 `OPENAI_API_KEY` / `OPENAI_BASE_URL` 未配置或不可达。
+<details>
+<summary>本项目提供八个 MCP 工具（展开查看）</summary>
 
-### Q2：抓取内容很少或疑似被拦截？
+### `web_search` — AI 网络搜索
 
-- 保持 `PLAYWRIGHT_FALLBACK=1`。
-- 必要时配置 `PROXY`。
+通过 Grok API 执行 AI 驱动的网络搜索，默认仅返回 Grok 的回答正文，并返回 `session_id` 以便后续获取信源。
 
-### Q3：CherryStudio 无法启动 MCP？
+`web_search` 输出不展开信源，仅返回 `sources_count`；信源会按 `session_id` 缓存在服务端，可用 `get_sources` 拉取。
 
-- 检查 `command` 是否为 `uv`。
-- 检查 `args` 是否为 `--directory ... run -m websearch`。
-- 在命令行先手动执行 `uv --directory path/to/websearch run -m websearch` 验证可启动。
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `query` | string | ✅ | - | 搜索查询语句 |
+| `platform` | string | ❌ | `""` | 聚焦平台（如 `"Twitter"`, `"GitHub, Reddit"`） |
+| `model` | string | ❌ | `null` | 按次指定 Grok 模型 ID |
+| `extra_sources` | int | ❌ | `0` | 额外补充信源数量（Tavily/Firecrawl，可为 0 关闭） |
 
-## Refer
+自动检测查询中的时间相关关键词（如"最新""今天""recent"等），注入本地时间上下文以提升时效性搜索的准确度。
 
-此项目改编自：
+返回值（结构化字典）：
 
-- https://github.com/VonEquinox/WebSearchMCP
+- `session_id`: 本次查询的会话 ID
+- `content`: Grok 回答正文（已自动剥离信源）
+- `sources_count`: 已缓存的信源数量
+
+### `get_sources` — 获取信源
+
+通过 `session_id` 获取对应 `web_search` 的全部信源。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `session_id` | string | ✅ | `web_search` 返回的 `session_id` |
+
+返回值（结构化字典）：
+
+- `session_id`
+- `sources_count`
+- `sources`: 信源列表（每项包含 `url`，可能包含 `title`/`description`/`provider`）
+
+### `web_fetch` — 网页内容抓取
+
+通过 Tavily Extract API 获取完整网页内容，返回 Markdown 格式。Tavily 失败时自动降级到 Firecrawl Scrape 进行托底抓取。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `url` | string | ✅ | 目标网页 URL |
+
+### `web_map` — 站点结构映射
+
+通过 Tavily Map API 遍历网站结构，发现 URL 并生成站点地图。
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `url` | string | ✅ | - | 起始 URL |
+| `instructions` | string | ❌ | `""` | 自然语言过滤指令 |
+| `max_depth` | int | ❌ | `1` | 最大遍历深度（1-5） |
+| `max_breadth` | int | ❌ | `20` | 每页最大跟踪链接数（1-500） |
+| `limit` | int | ❌ | `50` | 总链接处理数上限（1-500） |
+| `timeout` | int | ❌ | `150` | 超时秒数（10-150） |
+
+### `get_config_info` — 配置诊断
+
+无需参数。显示所有配置状态、测试 Grok API 连接、返回响应时间和可用模型列表（API Key 自动脱敏）。
+
+### `switch_model` — 模型切换
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `model` | string | ✅ | 模型 ID（如 `"grok-4-fast"`, `"grok-2-latest"`） |
+
+切换后配置持久化到 `~/.config/web-search/config.json`，跨会话保持。
+
+### `toggle_builtin_tools` — 工具路由控制
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `action` | string | ❌ | `"status"` | `"on"` 禁用官方工具 / `"off"` 启用官方工具 / `"status"` 查看状态 |
+
+修改项目级 `.claude/settings.json` 的 `permissions.deny`，一键禁用 Claude Code 官方的 WebSearch 和 WebFetch。
+
+### `search_planning` — 搜索规划
+
+结构化搜索规划脚手架（分阶段、多轮），用于在执行复杂搜索前先生成可执行的搜索计划。
+
+</details>
+
+## 四、常见问题
+
+<details>
+<summary>
+Q: 必须同时配置 Grok 和 Tavily 吗？
+</summary>
+A: Grok（`GROK_API_URL` + `GROK_API_KEY`）为必填，提供核心搜索能力。Tavily 和 Firecrawl 均为可选：配置 Tavily 后 `web_fetch` 优先使用 Tavily Extract，失败时降级到 Firecrawl Scrape；两者均未配置时 `web_fetch` 将返回配置错误提示。`web_map` 依赖 Tavily。
+</details>
+
+<details>
+<summary>
+Q: Grok API 地址需要什么格式？
+</summary>
+A: 需要 OpenAI 兼容格式的 API 地址（支持 `/chat/completions` 和 `/models` 端点）。如使用官方 Grok，需通过兼容 OpenAI 格式的镜像站访问。
+</details>
+
+<details>
+<summary>
+Q: 如何验证配置？
+</summary>
+A: 在 Claude 对话中说"显示 web-search 配置信息"，将自动测试 API 连接并显示结果。
+</details>
+
+## 许可证
+
+[MIT License](LICENSE)
+
+---
+
+**如果这个项目对您有帮助，请给个 Star！**
